@@ -80,7 +80,6 @@ jobs:
           env: _="Debug Build (subproject dependencies)"
           script: sudo docker run -t -i -v $TRAVIS_BUILD_DIR:/home/$USER/build
             -e TRAVIS_BUILD_DIR="/home/$USER/build"
-            -e CONFIG_OPTS="$CONFIG_OPTS"
             -e CONFIG_OPTS="--buildtype=debug -Duse_system_libs=false"
         - stage: build
           env: _="Release Build (subproject dependencies)"
