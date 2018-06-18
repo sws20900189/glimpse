@@ -145,6 +145,7 @@ client_api_src = [
     'src/glimpse_mem_pool.cc',
     'src/glimpse_log.c',
     'src/glimpse_gl.c',
+    'src/glimpse_target.cc',
 
     'src/infer.cc',
     'src/rdt_tree.cc',

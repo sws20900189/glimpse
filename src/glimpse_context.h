@@ -302,6 +302,8 @@ struct gm_joint {
     bool predicted;
 };
 
+struct gm_bone;
+
 struct gm_skeleton;
 
 struct gm_prediction;
@@ -404,9 +406,6 @@ gm_prediction_get_timestamp(struct gm_prediction *prediction);
 const struct gm_skeleton *
 gm_prediction_get_skeleton(struct gm_prediction *prediction);
 
-void
-gm_skeleton_free(struct gm_skeleton *skeleton);
-
 const struct gm_intrinsics *
 gm_tracking_get_video_camera_intrinsics(struct gm_tracking *tracking);
 
@@ -478,8 +477,26 @@ gm_tracking_create_rgb_candidate_clusters(struct gm_tracking *tracking,
                                           int *height,
                                           uint8_t **output);
 
+struct gm_skeleton *
+gm_skeleton_new(struct gm_context *ctx,
+                struct gm_joint *joints,
+                float confidence,
+                float distance,
+                uint64_t timestamp);
+
+struct gm_skeleton *
+gm_skeleton_new_from_json(struct gm_context *ctx,
+                          const char *asset_name);
+
 int
 gm_skeleton_get_n_joints(const struct gm_skeleton *skeleton);
+
+int
+gm_skeleton_get_n_bones(const struct gm_skeleton *skeleton);
+
+const struct gm_bone *
+gm_skeleton_get_bone(const struct gm_skeleton *skeleton,
+                     int bone);
 
 /* Gets the cumulative confidence of the joint values in the skeleton */
 float
@@ -493,6 +510,18 @@ gm_skeleton_get_distance(const struct gm_skeleton *skeleton);
 
 const struct gm_joint *
 gm_skeleton_get_joint(const struct gm_skeleton *skeleton, int joint);
+
+float
+gm_skeleton_angle_diff(const struct gm_skeleton *a,
+                       const struct gm_skeleton *b,
+                       const struct gm_bone *bone);
+
+float
+gm_skeleton_angle_diff_cumulative(const struct gm_skeleton *a,
+                                  const struct gm_skeleton *b);
+
+void
+gm_skeleton_free(struct gm_skeleton *skeleton);
 
 #ifdef __cplusplus
 }
