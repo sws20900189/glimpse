@@ -1990,7 +1990,7 @@ gm_rdt_context_new(struct gm_logger *log)
     prop.int_state.max = INT_MAX;
     ctx->properties.push_back(prop);
 
-    ctx->threshold_range = 0.5;
+    ctx->threshold_range = 0.645;
     prop = gm_ui_property();
     prop.object = ctx;
     prop.name = "threshold_range";
@@ -2012,7 +2012,7 @@ gm_rdt_context_new(struct gm_logger *log)
     prop.int_state.max = INT_MAX;
     ctx->properties.push_back(prop);
 
-    ctx->uv_range = 0.4;
+    ctx->uv_range = 0.4041;
     prop = gm_ui_property();
     prop.object = ctx;
     prop.name = "uv_range";
@@ -3243,8 +3243,9 @@ gm_rdt_context_train(struct gm_rdt_context* _ctx, char** err)
     std::mt19937 rng(ctx->seed);
     std::uniform_real_distribution<float> rand_uv(-uv_range_pm / 2.f,
                                                    uv_range_pm / 2.f);
+#warning "XXX: negating uv candidates"
     for (int i = 0; i < ctx->n_uvs * 4; i++)
-        ctx->uvs[i] = rand_uv(rng);
+        ctx->uvs[i] = -rand_uv(rng);
 
     for (int i = 0; i < ctx->n_uvs; i++) {
         float *uvs = &ctx->uvs[i * 4];
