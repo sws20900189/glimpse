@@ -3194,6 +3194,26 @@ gm_rdt_context_train(struct gm_rdt_context* _ctx, char** err)
     JSON_Object* camera = json_object_get_object(json_object(ctx->data_meta), "camera");
     int camera_height = json_object_get_number(camera, "height");
 
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
+    ctx->thresholds = (int16_t*)xmalloc(ctx->n_thresholds * sizeof(int16_t));
+
+    int threshold_step_mm = ctx->threshold_range * 500.0 /
+        ((ctx->n_thresholds - 1) / 2);
+
+    for (int n = 0; n < ctx->n_thresholds; n++) {
+        ctx->thresholds[n] = nth_threshold(n, threshold_step_mm);
+        gm_info(ctx->log, "threshold: %d", ctx->thresholds[n]);
+    }
+#else
+    ctx->thresholds = (float*)xmalloc(ctx->n_thresholds * sizeof(float));
+
+    float threshold_step_m = ctx->threshold_range / ((ctx->n_thresholds - 1) / 2);
+    for (int n = 0; n < ctx->n_thresholds; n++) {
+        ctx->thresholds[n] = nth_threshold(n, threshold_step_m);
+        gm_info(ctx->log, "threshold: %f", ctx->thresholds[n]);
+    }
+#endif
+
 
 #ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
     int16_t uv_range_pmm = meter_range_to_pixelmillimeters(ctx->fov,
@@ -3225,6 +3245,16 @@ gm_rdt_context_train(struct gm_rdt_context* _ctx, char** err)
                                                    uv_range_pm / 2.f);
     for (int i = 0; i < ctx->n_uvs * 4; i++)
         ctx->uvs[i] = rand_uv(rng);
+
+    for (int i = 0; i < ctx->n_uvs; i++) {
+        float *uvs = &ctx->uvs[i * 4];
+        gm_info(ctx->log, "uvs[%d] = { %13.6f, %13.6f, %13.6f, %13.6f }",
+                i,
+                uvs[0],
+                uvs[1],
+                uvs[2],
+                uvs[0]);
+    }
 #endif
 
     if (ctx->n_thresholds % 2 == 0) {
@@ -3232,27 +3262,6 @@ gm_rdt_context_train(struct gm_rdt_context* _ctx, char** err)
                 ctx->n_thresholds, ctx->n_thresholds + 1);
         ctx->n_thresholds++;
     }
-
-#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
-    ctx->thresholds = (int16_t*)xmalloc(ctx->n_thresholds * sizeof(int16_t));
-
-    int threshold_step_mm = ctx->threshold_range * 500.0 /
-        ((ctx->n_thresholds - 1) / 2);
-
-    for (int n = 0; n < ctx->n_thresholds; n++) {
-        ctx->thresholds[n] = nth_threshold(n, threshold_step_mm);
-        gm_info(ctx->log, "threshold: %d", ctx->thresholds[n]);
-    }
-#else
-    ctx->thresholds = (float*)xmalloc(ctx->n_thresholds * sizeof(float));
-
-    float threshold_step_m = ctx->threshold_range / ((ctx->n_thresholds - 1) / 2);
-    for (int n = 0; n < ctx->n_thresholds; n++) {
-        ctx->thresholds[n] = nth_threshold(n, threshold_step_m);
-        gm_info(ctx->log, "threshold: %f", ctx->thresholds[n]);
-    }
-
-#endif
 
     gm_info(ctx->log, "Initialising %u threads...\n", n_threads);
     ctx->thread_pool.resize(n_threads);
