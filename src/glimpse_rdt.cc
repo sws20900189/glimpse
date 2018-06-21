@@ -68,12 +68,22 @@ using half_float::half;
             exit(1); \
     } while(0)
 
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
 #define nth_threshold(n, step) ({ \
             int offset_n = n + 1; /* we only want zero once */ \
             int sign = -1 + (n%2) * 2; \
             int threshold = offset_n/2 * sign * step; \
             threshold; /* statement expression evaluates to this */ \
         })
+#else
+#define nth_threshold(n, step) ({ \
+            int offset_n = n + 1; /* we only want zero once */ \
+            int sign = -1 + (n%2) * 2; \
+            int offset = (offset_n/2 * sign); \
+            float threshold = offset * step; \
+            threshold; /* statement expression evaluates to this */ \
+        })
+#endif
 
 #define ARRAY_LEN(X) (sizeof(X)/sizeof(X[0]))
 
@@ -124,8 +134,13 @@ struct node_shard_data {
 };
 
 struct node {
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
     int32_t uvs[4]; // U in [0:2] and V in [2:4]
     int32_t t_mm;
+#else
+    float uvs[4];
+    float t_m;
+#endif
     uint32_t label_pr_idx;  // Index into label probability table (1-based)
 };
 
@@ -254,8 +269,6 @@ struct gm_rdt_context_impl {
     int      n_images;      // Number of training images
 
     uint64_t  last_load_update;
-    int16_t* depth_images;  // Depth images (row-major)
-
     int      n_uvs;         // Number of combinations of u,v pairs
     float    uv_range;      // Range of u,v combinations to generate
     int      n_thresholds;  // The number of thresholds
@@ -267,10 +280,22 @@ struct gm_rdt_context_impl {
     int      batch_number;
 
     int        n_pixels;      // Number of pixels to sample
+
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
+    int16_t* depth_images;  // Depth images
     std::vector<int32_t> uvs; // The uv pairs to test ordered like:
                               // [uv0.x, uv0.y, uv1.x, uv1.y]
                               // values are in pixel-millimeter units
+
     int16_t* thresholds;    // A list of thresholds to test
+#else
+    half* depth_images;  // Depth images
+    std::vector<float> uvs; // The uv pairs to test ordered like:
+                            // [uv0.x, uv0.y, uv1.x, uv1.y]
+                            // values are in pixel-millimeter units
+
+    float* thresholds;    // A list of thresholds to test
+#endif
 
     int      n_threads;     // How many threads to spawn for training
 
@@ -893,6 +918,8 @@ accumulate_pixels_histogram_32(struct gm_rdt_context_impl* ctx,
     }
 }
 
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
+
 /* Implement a fixed point round-nearest, considering that the numerator
  * might be negative.
  *
@@ -928,6 +955,39 @@ sample_uv_gradient_mm(int16_t* depth_image,
 
     return u_z - v_z;
 }
+
+#else
+
+static inline float
+sample_uv_floor_uvs_float_m(half* depth_image,
+                            int16_t width,
+                            int16_t height,
+                            int16_t x,
+                            int16_t y,
+                            float depth,
+                            float* uvs)
+{
+    int u[2] = { (int)(x + uvs[0] / depth),
+                 (int)(y + uvs[1] / depth) };
+    int v[2] = { (int)(x + uvs[2] / depth),
+                 (int)(y + uvs[3] / depth) };
+
+    float upixel;
+    if (u[0] >= 0 && u[0] < (int)width && u[1] >= 0 && u[1] < (int)height) {
+        upixel = (float)depth_image[((u[1] * width) + u[0])];
+    } else
+        upixel = 1000.f;
+
+    float vpixel;
+    if (v[0] >= 0 && v[0] < (int)width && v[1] >= 0 && v[1] < (int)height) {
+        vpixel = (float)depth_image[((v[1] * width) + v[0])];
+    } else
+        vpixel = 1000.f;
+
+    return upixel - vpixel;
+}
+
+#endif
 
 static void
 accumulate_uvt_lr_histograms(struct gm_rdt_context_impl* ctx,
@@ -991,15 +1051,21 @@ accumulate_uvt_lr_histograms(struct gm_rdt_context_impl* ctx,
 
         // Accumulate LR branch histograms
 
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
         int16_t* depth_image = &ctx->depth_images[depth_meta.pixel_offset];
-
+        int32_t* uvs = ctx->uvs.data();
         int16_t depth_mm = depth_image[px.y * depth_meta.width + px.x];
         int16_t half_depth = depth_mm / 2;
-
-        int32_t *uvs = ctx->uvs.data();
-
         int16_t gradients[n_uv_combos];
+#else
+        half* depth_image = &ctx->depth_images[depth_meta.pixel_offset];
+        float* uvs = ctx->uvs.data();
+        float depth_m = depth_image[px.y * depth_meta.width + px.x];
+        float gradients[n_uv_combos];
+#endif
+
         for (int c = uv_start; c < uv_end; c++) {
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
             gradients[c - uv_start] = sample_uv_gradient_mm(depth_image,
                                                             depth_meta.width,
                                                             depth_meta.height,
@@ -1007,6 +1073,14 @@ accumulate_uvt_lr_histograms(struct gm_rdt_context_impl* ctx,
                                                             depth_mm,
                                                             half_depth,
                                                             uvs + 4 * c);
+#else
+            gradients[c - uv_start] = sample_uv_floor_uvs_float_m(depth_image,
+                                                                  depth_meta.width,
+                                                                  depth_meta.height,
+                                                                  px.x, px.y,
+                                                                  depth_m,
+                                                                  uvs + 4 * c);
+#endif
         }
 
         /* Aim to minimize our memory bandwidth usage here by using 16bit
@@ -1016,7 +1090,11 @@ accumulate_uvt_lr_histograms(struct gm_rdt_context_impl* ctx,
             for (int i = 0;  i < n_uv_combos; i++) {
                 int uv_offset = i * n_thresholds * n_labels * 2;
                 for (int n = 0; n < n_thresholds; n++) {
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
                     int threshold = ctx->thresholds[n];
+#else
+                    float threshold = ctx->thresholds[n];
+#endif
                     int t_offset = n * n_labels * 2;
                     int lr_histogram_idx = uv_offset + t_offset;
 
@@ -1033,7 +1111,11 @@ accumulate_uvt_lr_histograms(struct gm_rdt_context_impl* ctx,
             for (int i = 0;  i < n_uv_combos; i++) {
                 int uv_offset = i * n_thresholds * n_labels * 2;
                 for (int n = 0; n < n_thresholds; n++) {
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
                     int threshold = ctx->thresholds[n];
+#else
+                    float threshold = ctx->thresholds[n];
+#endif
                     int t_offset = n * n_labels * 2;
                     int lr_histogram_idx = uv_offset + t_offset;
 
@@ -1400,8 +1482,13 @@ schedule_node_work(struct thread_state* state)
 static void
 collect_pixels(struct gm_rdt_context_impl* ctx,
                struct node_data* data,
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
                int32_t* uvs,
                int16_t t_mm,
+#else
+               float* uvs,
+               float t_m,
+#endif
                struct pixel** l_pixels,
                struct pixel** r_pixels,
                int* n_lr_pixels)
@@ -1417,11 +1504,17 @@ collect_pixels(struct gm_rdt_context_impl* ctx,
     int r_index = 0;
 
     struct depth_meta* depth_index = ctx->depth_index.data();
+
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
     int16_t* depth_images = ctx->depth_images;
+#else
+    half* depth_images = ctx->depth_images;
+#endif
     for (int p = 0; p < data->n_pixels; p++) {
         struct pixel px = data->pixels[p];
 
         struct depth_meta depth_meta = depth_index[px.i];
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
         int16_t* depth_image = &depth_images[depth_meta.pixel_offset];
 
         int16_t depth_mm = depth_image[px.y * depth_meta.width + px.x];
@@ -1436,6 +1529,21 @@ collect_pixels(struct gm_rdt_context_impl* ctx,
             (*l_pixels)[l_index++] = px;
         else
             (*r_pixels)[r_index++] = px;
+#else
+        half* depth_image = &depth_images[depth_meta.pixel_offset];
+
+        float depth_m = depth_image[px.y * depth_meta.width + px.x];
+        float gradient = sample_uv_floor_uvs_float_m(depth_image,
+                                                     depth_meta.width,
+                                                     depth_meta.height,
+                                                     px.x, px.y,
+                                                     depth_m,
+                                                     uvs);
+        if (gradient < t_m)
+            (*l_pixels)[l_index++] = px;
+        else
+            (*r_pixels)[r_index++] = px;
+#endif
     }
 
     if (n_lr_pixels[0] != l_index) {
@@ -1553,14 +1661,20 @@ process_node_shards_work_cb(struct thread_state* state,
     struct node* node = &ctx->tree[node_data.id];
     if (best_gain > 0.f && (node_depth + 1) < ctx->max_depth)
     {
-        memcpy(node->uvs, &ctx->uvs[4 * best_uv], sizeof(node->uvs));
-        node->t_mm = ctx->thresholds[best_threshold];
-
         struct pixel* l_pixels;
         struct pixel* r_pixels;
 
+        memcpy(node->uvs, &ctx->uvs[4 * best_uv], sizeof(node->uvs));
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
+        node->t_mm = ctx->thresholds[best_threshold];
         collect_pixels(ctx, &node_data, node->uvs, node->t_mm,
                        &l_pixels, &r_pixels, n_lr_pixels);
+#else
+        node->t_m = ctx->thresholds[best_threshold];
+        collect_pixels(ctx, &node_data, node->uvs, node->t_m,
+                       &l_pixels, &r_pixels, n_lr_pixels);
+#endif
+
 
         int id = (2 * node_data.id) + 1;
         struct node_data ldata;
@@ -1591,9 +1705,15 @@ process_node_shards_work_cb(struct thread_state* state,
                     "    T: %f\n"
                     "  Queued left id=%d, right id=%d\n",
                     node_data.id, best_gain,
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
                     node->uvs[0] / 1000.0f, node->uvs[1] / 1000.0f,
                     node->uvs[2] / 1000.0f, node->uvs[3] / 1000.0f,
                     node->t_mm / 1000.0f,
+#else
+                    node->uvs[0], node->uvs[1],
+                    node->uvs[2], node->uvs[3],
+                    node->t_m,
+#endif
                     ldata.id,
                     rdata.id);
         }
@@ -2082,18 +2202,32 @@ recursive_build_tree(struct gm_rdt_context_impl* ctx,
 
     if (node->label_pr_idx == 0)
     {
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
         json_object_set_number(json_node, "t", node->t_mm / 1000.0f);
+#else
+        json_object_set_number(json_node, "t", node->t_m);
+#endif
 
         JSON_Value* u_val = json_value_init_array();
         JSON_Array* u = json_array(u_val);
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
         json_array_append_number(u, node->uvs[0] / 1000.0f);
         json_array_append_number(u, node->uvs[1] / 1000.0f);
+#else
+        json_array_append_number(u, node->uvs[0]);
+        json_array_append_number(u, node->uvs[1]);
+#endif
         json_object_set_value(json_node, "u", u_val);
 
         JSON_Value* v_val = json_value_init_array();
         JSON_Array* v = json_array(v_val);
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
         json_array_append_number(v, node->uvs[2] / 1000.0f);
         json_array_append_number(v, node->uvs[3] / 1000.0f);
+#else
+        json_array_append_number(v, node->uvs[2]);
+        json_array_append_number(v, node->uvs[3]);
+#endif
         json_object_set_value(json_node, "v", v_val);
 
         if (depth < (ctx->max_depth - 1))
@@ -2180,6 +2314,7 @@ save_tree_json(struct gm_rdt_context_impl *ctx,
     json_object_set_number(json_object(rdt), "n_labels", ctx->n_rdt_labels);
     json_object_set_number(json_object(rdt), "bg_label", 0);
 
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
     /* Previous trees without a bg_depth property implicitly considered 1000.0
      * meters to be the background depth, but since we can't represent that
      * in millimeters in an int16_t newer trees are trained to treat 33 meters
@@ -2199,6 +2334,9 @@ save_tree_json(struct gm_rdt_context_impl *ctx,
     // round the U and V depth values to the nearest discrete value in
     // millimeters
     json_object_set_boolean(json_object(rdt), "sample_uv_z_in_mm", true);
+#else
+    json_object_set_number(json_object(rdt), "bg_depth", 1000.0);
+#endif
 
     JSON_Value* labels = json_value_deep_copy(ctx->label_names_js);
     json_object_set_value(json_object(rdt), "labels", labels);
@@ -2311,18 +2449,31 @@ reload_tree(struct gm_rdt_context_impl* ctx,
 
     /* We track the UVT values as integers instead of float while training... */
     for (int i = 0; i < n_reload_nodes; i++) {
-        Node float_node = checkpoint->nodes[i];
-        struct node fixed_node = {};
+        Node reload_node = checkpoint->nodes[i];
 
-        if (float_node.label_pr_idx == 0) {
-            fixed_node.uvs[0] = roundf(float_node.uv[0] * 1000.0f);
-            fixed_node.uvs[1] = roundf(float_node.uv[1] * 1000.0f);
-            fixed_node.uvs[2] = roundf(float_node.uv[2] * 1000.0f);
-            fixed_node.uvs[3] = roundf(float_node.uv[3] * 1000.0f);
-            fixed_node.t_mm = roundf(float_node.t * 1000.0f);
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
+        struct node fixed_node = {};
+        if (reload_node.label_pr_idx == 0) {
+            fixed_node.uvs[0] = roundf(reload_node.uv[0] * 1000.0f);
+            fixed_node.uvs[1] = roundf(reload_node.uv[1] * 1000.0f);
+            fixed_node.uvs[2] = roundf(reload_node.uv[2] * 1000.0f);
+            fixed_node.uvs[3] = roundf(reload_node.uv[3] * 1000.0f);
+            fixed_node.t_mm = roundf(reload_node.t * 1000.0f);
         }
-        fixed_node.label_pr_idx = float_node.label_pr_idx;
+        fixed_node.label_pr_idx = reload_node.label_pr_idx;
         ctx->tree[i] = fixed_node;
+#else
+        struct node float_node = {};
+        if (reload_node.label_pr_idx == 0) {
+            float_node.uvs[0] = reload_node.uv[0];
+            float_node.uvs[1] = reload_node.uv[1];
+            float_node.uvs[2] = reload_node.uv[2];
+            float_node.uvs[3] = reload_node.uv[3];
+            float_node.t_m = reload_node.t;
+        }
+        float_node.label_pr_idx = reload_node.label_pr_idx;
+        ctx->tree[i] = float_node;
+#endif
     }
 
     // Navigate the tree to determine any unfinished nodes and the last
@@ -2391,7 +2542,12 @@ reload_tree(struct gm_rdt_context_impl* ctx,
                 struct pixel* r_pixels;
                 int n_lr_pixels[] = { 0, 0 };
                 collect_pixels(ctx, &node_data,
-                               node->uvs, node->t_mm,
+                               node->uvs,
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
+                               node->t_mm,
+#else
+                               node->t_m,
+#endif
                                &l_pixels, &r_pixels,
                                n_lr_pixels);
 
@@ -2529,7 +2685,11 @@ load_depth_buffers_cb(struct gm_data_index* data_index,
 
     half* src = loader->image_buf.data();
     int src_width = loader->full_width;
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
     int16_t* dest = &ctx->depth_images[depth_meta.pixel_offset];
+#else
+    half* dest = &ctx->depth_images[depth_meta.pixel_offset];
+#endif
     for (int y = 0; y < cropped_height; y++) {
         for (int x = 0; x < cropped_width; x++) {
             int src_x = cropped_x + x;
@@ -2543,6 +2703,7 @@ load_depth_buffers_cb(struct gm_data_index* data_index,
                       "Spurious NAN depth value in training frame %s",
                       frame_path);
 
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
             if (depth_m >= HUGE_DEPTH)
                 dest[dest_off] = INT16_MAX;
             else {
@@ -2552,6 +2713,12 @@ load_depth_buffers_cb(struct gm_data_index* data_index,
 
                 dest[dest_off] = depth_m * 1000.0f + 0.5f; // round nearest with the +0.5
             }
+#else
+            if (depth_m >= HUGE_DEPTH)
+                dest[dest_off] = 1000.0f;
+            else
+                dest[dest_off] = depth_m;
+#endif
         }
     }
 
@@ -2689,7 +2856,11 @@ load_training_data(struct gm_rdt_context_impl* ctx,
             (int64_t)max_depth_size,
             (int)((depth_size * 100 / max_depth_size)));
 
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
     ctx->depth_images = (int16_t*)xmalloc(depth_size);
+#else
+    ctx->depth_images = (half*)xmalloc(depth_size);
+#endif
 
     struct depth_loader loader;
     loader.ctx = ctx;
@@ -2746,18 +2917,27 @@ load_training_data(struct gm_rdt_context_impl* ctx,
  */
 static void
 debug_infer_pixel_label(struct gm_rdt_context_impl* ctx,
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
                         int16_t* depth_image,
+#else
+                        half* depth_image,
+#endif
                         int width,
                         int height,
                         struct pixel px,
                         float* pr_table_out)
 {
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
     int16_t depth_mm = depth_image[px.y * width + px.x];
     int16_t half_depth_mm = depth_mm / 2;
+#else
+    float depth_m = depth_image[px.y * width + px.x];
+#endif
 
     int id = 0;
     struct node node = ctx->tree[0];
     while (node.label_pr_idx == 0) {
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
         int16_t gradient = sample_uv_gradient_mm(depth_image,
                                                  width,
                                                  height,
@@ -2765,7 +2945,6 @@ debug_infer_pixel_label(struct gm_rdt_context_impl* ctx,
                                                  depth_mm,
                                                  half_depth_mm,
                                                  node.uvs);
-
         /* NB: The nodes are arranged in breadth-first, left then
          * right child order with the root node at index zero.
          *
@@ -2774,7 +2953,23 @@ debug_infer_pixel_label(struct gm_rdt_context_impl* ctx,
          * child and 2 * id + 2 is the index for the right child...
          */
         id = (gradient < node.t_mm) ? 2 * id + 1 : 2 * id + 2;
+#else
+        float gradient = sample_uv_floor_uvs_float_m(depth_image,
+                                                     width,
+                                                     height,
+                                                     px.x, px.y,
+                                                     depth_m,
+                                                     node.uvs);
 
+        /* NB: The nodes are arranged in breadth-first, left then
+         * right child order with the root node at index zero.
+         *
+         * In this case if you have an index for any particular node
+         * ('id' here) then 2 * id + 1 is the index for the left
+         * child and 2 * id + 2 is the index for the right child...
+         */
+        id = (gradient < node.t_m) ? 2 * id + 1 : 2 * id + 2;
+#endif
         node = ctx->tree[id];
     }
 
@@ -2881,7 +3076,11 @@ debug_check_inference(struct gm_rdt_context_impl* ctx,
         uint8_t out[max_width * max_height];
         memset(out, 0, sizeof(out));
 
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
         int16_t* depth_image = &ctx->depth_images[depth_meta.pixel_offset];
+#else
+        half* depth_image = &ctx->depth_images[depth_meta.pixel_offset];
+#endif
 
         for (int p = 0; p < ctx->n_pixels; p++) {
             struct pixel px = root_node.pixels[image_pixel_off + p];
@@ -2926,6 +3125,7 @@ debug_check_inference(struct gm_rdt_context_impl* ctx,
     return true;
 }
 
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
 static int
 meter_range_to_pixelmillimeters(float fov_rad, int res_px, float meter_range)
 {
@@ -2935,6 +3135,16 @@ meter_range_to_pixelmillimeters(float fov_rad, int res_px, float meter_range)
     // + 0.5 to round nearest
     return meter_range * px_per_meter * 1000.0f + 0.5f;
 }
+#else
+static float
+meter_range_to_pixelmeters(float fov_rad, int res_px, float meter_range)
+{
+    float field_size_at_1m = 2.0f * tanf(fov_rad / 2.0f);
+    float px_per_meter = (float)res_px / field_size_at_1m;
+
+    return meter_range * px_per_meter;
+}
+#endif
 
 bool
 gm_rdt_context_train(struct gm_rdt_context* _ctx, char** err)
@@ -2983,6 +3193,9 @@ gm_rdt_context_train(struct gm_rdt_context* _ctx, char** err)
     // invariance for uv offsets.
     JSON_Object* camera = json_object_get_object(json_object(ctx->data_meta), "camera");
     int camera_height = json_object_get_number(camera, "height");
+
+
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
     int16_t uv_range_pmm = meter_range_to_pixelmillimeters(ctx->fov,
                                                            camera_height,
                                                            ctx->uv_range);
@@ -2997,6 +3210,22 @@ gm_rdt_context_train(struct gm_rdt_context* _ctx, char** err)
                                                   uv_range_pmm / 2);
     for (int i = 0; i < ctx->n_uvs * 4; i++)
         ctx->uvs[i] = round(rand_uv(rng));
+#else
+    float uv_range_pm = meter_range_to_pixelmeters(ctx->fov,
+                                                   camera_height,
+                                                   ctx->uv_range);
+    gm_info(ctx->log, "UV range = %.2fm = %f pixel-meters",
+            ctx->uv_range, uv_range_pm);
+
+    // Calculate the u,v,t parameters that we're going to test
+    gm_info(ctx->log, "Preparing training metadata...\n");
+    ctx->uvs.resize(ctx->n_uvs * 4);
+    std::mt19937 rng(ctx->seed);
+    std::uniform_real_distribution<float> rand_uv(-uv_range_pm / 2.f,
+                                                   uv_range_pm / 2.f);
+    for (int i = 0; i < ctx->n_uvs * 4; i++)
+        ctx->uvs[i] = rand_uv(rng);
+#endif
 
     if (ctx->n_thresholds % 2 == 0) {
         gm_info(ctx->log, "Increasing N thresholds from %d to %d for symmetry around zero",
@@ -3004,6 +3233,7 @@ gm_rdt_context_train(struct gm_rdt_context* _ctx, char** err)
         ctx->n_thresholds++;
     }
 
+#ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
     ctx->thresholds = (int16_t*)xmalloc(ctx->n_thresholds * sizeof(int16_t));
 
     int threshold_step_mm = ctx->threshold_range * 500.0 /
@@ -3011,8 +3241,18 @@ gm_rdt_context_train(struct gm_rdt_context* _ctx, char** err)
 
     for (int n = 0; n < ctx->n_thresholds; n++) {
         ctx->thresholds[n] = nth_threshold(n, threshold_step_mm);
-        //gm_info(ctx->log, "threshold: %d", ctx->thresholds[n]);
+        gm_info(ctx->log, "threshold: %d", ctx->thresholds[n]);
     }
+#else
+    ctx->thresholds = (float*)xmalloc(ctx->n_thresholds * sizeof(float));
+
+    float threshold_step_m = ctx->threshold_range / ((ctx->n_thresholds - 1) / 2);
+    for (int n = 0; n < ctx->n_thresholds; n++) {
+        ctx->thresholds[n] = nth_threshold(n, threshold_step_m);
+        gm_info(ctx->log, "threshold: %f", ctx->thresholds[n]);
+    }
+
+#endif
 
     gm_info(ctx->log, "Initialising %u threads...\n", n_threads);
     ctx->thread_pool.resize(n_threads);
