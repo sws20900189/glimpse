@@ -208,13 +208,13 @@ rdt_tree_load_from_json(struct gm_logger* log,
 
     if (json_object_has_value(json_tree, "sample_uv_offsets_nearest")) {
         tree->header.sample_uv_offsets_nearest =
-            json_object_get_number(json_tree, "sample_uv_offsets_nearest");
+            json_object_get_boolean(json_tree, "sample_uv_offsets_nearest");
     } else
         tree->header.sample_uv_offsets_nearest = false;
 
     if (json_object_has_value(json_tree, "sample_uv_z_in_mm")) {
         tree->header.sample_uv_z_in_mm =
-            json_object_get_number(json_tree, "sample_uv_z_in_mm");
+            json_object_get_boolean(json_tree, "sample_uv_z_in_mm");
     } else
         tree->header.sample_uv_z_in_mm = false;
 
