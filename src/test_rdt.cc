@@ -472,10 +472,10 @@ infer_pixel_label_probs_float(struct gm_logger *log,
         Node node = tree->nodes[0];
         while (node.label_pr_idx == 0)
         {
-            int32_t u[2] = { (int32_t)(x + node.uv[0] / depth),
-                (int32_t)(y + node.uv[1] / depth) };
-            int32_t v[2] = { (int32_t)(x + node.uv[2] / depth),
-                (int32_t)(y + node.uv[3] / depth) };
+            int32_t u[2] = { (int32_t)(x + roundf(node.uv[0] / depth)),
+                             (int32_t)(y + roundf(node.uv[1] / depth)) };
+            int32_t v[2] = { (int32_t)(x + roundf(node.uv[2] / depth)),
+                             (int32_t)(y + roundf(node.uv[3] / depth)) };
 
             float upixel = (u[0] >= 0 && u[0] < (int32_t)width &&
                             u[1] >= 0 && u[1] < (int32_t)height) ?

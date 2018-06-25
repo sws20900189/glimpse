@@ -270,10 +270,10 @@ infer_labels_2017_floor_uv_float_m(void* userdata)
 
             int id = 0;
             while (node.label_pr_idx == 0) {
-                Int2D u = { (int)(pixel[0] + node.uv[0] / depth),
-                            (int)(pixel[1] + node.uv[1] / depth) };
-                Int2D v = { (int)(pixel[0] + node.uv[2] / depth),
-                            (int)(pixel[1] + node.uv[3] / depth) };
+                Int2D u = { (int)(pixel[0] + roundf(node.uv[0] / depth)),
+                            (int)(pixel[1] + roundf(node.uv[1] / depth)) };
+                Int2D v = { (int)(pixel[0] + roundf(node.uv[2] / depth)),
+                            (int)(pixel[1] + roundf(node.uv[3] / depth)) };
 
                 float upixel = (u[0] >= 0 && u[0] < (int)width &&
                                 u[1] >= 0 && u[1] < (int)height) ?

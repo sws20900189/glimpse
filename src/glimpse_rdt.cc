@@ -55,7 +55,7 @@
 #include "glimpse_data.h"
 #include "glimpse_rdt.h"
 
-#define USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING 1
+//#define USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING 1
 
 #undef GM_LOG_CONTEXT
 #define GM_LOG_CONTEXT "rdt"
@@ -988,10 +988,10 @@ sample_uv_floor_uvs_float_m(half* depth_image,
                             float depth,
                             float* uvs)
 {
-    int u[2] = { (int)(x + uvs[0] / depth),
-                 (int)(y + uvs[1] / depth) };
-    int v[2] = { (int)(x + uvs[2] / depth),
-                 (int)(y + uvs[3] / depth) };
+    int u[2] = { (int)(x + roundf(uvs[0] / depth)),
+                 (int)(y + roundf(uvs[1] / depth)) };
+    int v[2] = { (int)(x + roundf(uvs[2] / depth)),
+                 (int)(y + roundf(uvs[3] / depth)) };
 
     float upixel;
     if (u[0] >= 0 && u[0] < (int)width && u[1] >= 0 && u[1] < (int)height) {
