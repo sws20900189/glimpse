@@ -369,8 +369,8 @@ infer_pixel_label_probs_fixed(struct gm_logger *log,
 
     float depth = depth_image[off];
 
-    int16_t depth_mm = depth * 1000.0f + 0.5f;
-    int16_t half_depth_mm = depth_mm / 2;
+    //int16_t depth_mm = depth * 1000.0f + 0.5f;
+    //int16_t half_depth_mm = depth_mm / 2;
 
     memset(pr_table_out, 0, sizeof(float) * n_rdt_labels);
 
@@ -381,6 +381,7 @@ infer_pixel_label_probs_fixed(struct gm_logger *log,
         Node node = tree->nodes[0];
         while (node.label_pr_idx == 0)
         {
+#if 0
 #define div_int_round_nearest(N, D, HALF_D) \
     ((N < 0) ? ((N - HALF_D)/D) : ((N + HALF_D)/D))
 
@@ -394,6 +395,12 @@ infer_pixel_label_probs_fixed(struct gm_logger *log,
             int32_t u_y = y + div_int_round_nearest(uvs[1], depth_mm, half_depth_mm);
             int32_t v_x = x + div_int_round_nearest(uvs[2], depth_mm, half_depth_mm);
             int32_t v_y = y + div_int_round_nearest(uvs[3], depth_mm, half_depth_mm);
+#else
+            int32_t u_x = x + roundf(node.uv[0] / depth);
+            int32_t u_y = y + roundf(node.uv[1] / depth);
+            int32_t v_x = x + roundf(node.uv[2] / depth);
+            int32_t v_y = y + roundf(node.uv[3] / depth);
+#endif
 
             int16_t u_z;
             if (u_x >= 0 && u_x < width && u_y >= 0 && u_y < height)

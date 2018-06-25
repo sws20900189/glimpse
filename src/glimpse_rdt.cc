@@ -55,6 +55,8 @@
 #include "glimpse_data.h"
 #include "glimpse_rdt.h"
 
+#define USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING 1
+
 #undef GM_LOG_CONTEXT
 #define GM_LOG_CONTEXT "rdt"
 
@@ -930,19 +932,38 @@ accumulate_pixels_histogram_32(struct gm_rdt_context_impl* ctx,
     ((N < 0) ? ((N - HALF_D)/D) : ((N + HALF_D)/D))
 
 static inline int16_t
-sample_uv_gradient_mm(int16_t* depth_image,
+sample_uv_gradient_mm(struct gm_logger* log,
+                      int16_t* depth_image,
                       int16_t width,
                       int16_t height,
                       int16_t x,
                       int16_t y,
-                      int16_t depth_mm,
-                      int16_t half_depth_mm,
+                      float depth_m,
+                      //int16_t depth_mm,
+                      //int16_t half_depth_mm,
                       int32_t* uvs)
 {
+#if 0
     int32_t u_x = x + div_int_round_nearest(uvs[0], depth_mm, half_depth_mm);
     int32_t u_y = y + div_int_round_nearest(uvs[1], depth_mm, half_depth_mm);
     int32_t v_x = x + div_int_round_nearest(uvs[2], depth_mm, half_depth_mm);
     int32_t v_y = y + div_int_round_nearest(uvs[3], depth_mm, half_depth_mm);
+
+    float depth_m = (float)depth_mm / 1000.0f;
+    int32_t u_xf = x + roundf(((float)uvs[0] / 1000.f) / depth_m);
+    int32_t u_yf = y + roundf(((float)uvs[1] / 1000.f) / depth_m);
+    int32_t v_xf = x + roundf(((float)uvs[2] / 1000.f) / depth_m);
+    int32_t v_yf = y + roundf(((float)uvs[3] / 1000.f) / depth_m);
+    gm_assert(log, u_xf >= (u_x - 1) && u_xf <= (u_x + 1), "u_x fixed vs float inconsistency: %d / %d = %d vs %df + %d", uvs[0], depth_mm, u_x, u_xf, x);
+    gm_assert(log, u_yf >= (u_y - 1) && u_yf <= (u_y + 1), "u_x fixed vs float inconsistency: %d / %d = %d vs %df + %d", uvs[1], depth_mm, u_y, u_yf, y);
+    gm_assert(log, v_xf >= (v_x - 1) && v_xf <= (v_x + 1), "u_x fixed vs float inconsistency: %d / %d = %d vs %df + %d", uvs[2], depth_mm, v_x, v_xf, x);
+    gm_assert(log, v_yf >= (v_y - 1) && v_yf <= (v_y + 1), "u_x fixed vs float inconsistency: %d / %d = %d vs %df + %d", uvs[3], depth_mm, v_y, v_yf, y);
+#else
+    int32_t u_x = x + roundf(((float)uvs[0] / 1000.f) / depth_m);
+    int32_t u_y = y + roundf(((float)uvs[1] / 1000.f) / depth_m);
+    int32_t v_x = x + roundf(((float)uvs[2] / 1000.f) / depth_m);
+    int32_t v_y = y + roundf(((float)uvs[3] / 1000.f) / depth_m);
+#endif
 
     int16_t u_z = (u_x >= 0 && u_x < width &&
                    u_y >= 0 && u_y < height) ?
@@ -1055,7 +1076,7 @@ accumulate_uvt_lr_histograms(struct gm_rdt_context_impl* ctx,
         int16_t* depth_image = &ctx->depth_images[depth_meta.pixel_offset];
         int32_t* uvs = ctx->uvs.data();
         int16_t depth_mm = depth_image[px.y * depth_meta.width + px.x];
-        int16_t half_depth = depth_mm / 2;
+        //int16_t half_depth = depth_mm / 2;
         int16_t gradients[n_uv_combos];
 #else
         half* depth_image = &ctx->depth_images[depth_meta.pixel_offset];
@@ -1066,12 +1087,14 @@ accumulate_uvt_lr_histograms(struct gm_rdt_context_impl* ctx,
 
         for (int c = uv_start; c < uv_end; c++) {
 #ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
-            gradients[c - uv_start] = sample_uv_gradient_mm(depth_image,
+            gradients[c - uv_start] = sample_uv_gradient_mm(ctx->log,
+                                                            depth_image,
                                                             depth_meta.width,
                                                             depth_meta.height,
                                                             px.x, px.y,
-                                                            depth_mm,
-                                                            half_depth,
+                                                            depth_mm / 1000.f,
+                                                            //depth_mm,
+                                                            //half_depth,
                                                             uvs + 4 * c);
 #else
             gradients[c - uv_start] = sample_uv_floor_uvs_float_m(depth_image,
@@ -1518,12 +1541,14 @@ collect_pixels(struct gm_rdt_context_impl* ctx,
         int16_t* depth_image = &depth_images[depth_meta.pixel_offset];
 
         int16_t depth_mm = depth_image[px.y * depth_meta.width + px.x];
-        int16_t gradient = sample_uv_gradient_mm(depth_image,
+        int16_t gradient = sample_uv_gradient_mm(ctx->log,
+                                                 depth_image,
                                                  depth_meta.width,
                                                  depth_meta.height,
                                                  px.x, px.y,
-                                                 depth_mm,
-                                                 depth_mm / 2,
+                                                 depth_mm / 1000.f,
+                                                 //depth_mm,
+                                                 //depth_mm / 2,
                                                  uvs);
         if (gradient < t_mm)
             (*l_pixels)[l_index++] = px;
@@ -2929,7 +2954,7 @@ debug_infer_pixel_label(struct gm_rdt_context_impl* ctx,
 {
 #ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
     int16_t depth_mm = depth_image[px.y * width + px.x];
-    int16_t half_depth_mm = depth_mm / 2;
+    //int16_t half_depth_mm = depth_mm / 2;
 #else
     float depth_m = depth_image[px.y * width + px.x];
 #endif
@@ -2938,12 +2963,14 @@ debug_infer_pixel_label(struct gm_rdt_context_impl* ctx,
     struct node node = ctx->tree[0];
     while (node.label_pr_idx == 0) {
 #ifdef USE_ROUND_NEAREST_UVS_DISCRETE_MM_SAMPLING
-        int16_t gradient = sample_uv_gradient_mm(depth_image,
+        int16_t gradient = sample_uv_gradient_mm(ctx->log,
+                                                 depth_image,
                                                  width,
                                                  height,
                                                  px.x, px.y,
-                                                 depth_mm,
-                                                 half_depth_mm,
+                                                 depth_mm / 1000.f,
+                                                 //depth_mm,
+                                                 //half_depth_mm,
                                                  node.uvs);
         /* NB: The nodes are arranged in breadth-first, left then
          * right child order with the root node at index zero.
